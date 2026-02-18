@@ -1,541 +1,603 @@
 import logging
 import asyncio
-import json
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from collections import defaultdict
 
 import aiohttp
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
-# Настройка
+# Конфигурация
 TOKEN = "8398666469:AAFJuFpeUieZOnLVxStaviHr1X--O3yAAu8"
 ADMIN_ID = 8386169734
-BOT_NAME = "Зака"
-BOT_FULL_NAME = "Закатун"
-CREATOR_NAME = "Михаил Закатов"
-BOT_VERSION = "3.1"
-
-# Mistral AI
+BOT_NAME = "Закатун"
+BOT_VERSION = "5.0"
 MISTRAL_API_KEY = "HCxrOgMwskodETQDGvITs4f65Qzwemiz"
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 
-# Настройки для авто-сообщений
-AUTO_MESSAGE_DELAY = 300  # 5 минут бездействия в группе
-MAX_AUTO_MESSAGES_PER_DAY = 5
+# Базовый лимит токенов
+BASE_TOKEN_LIMIT = 1000
+TOKENS_PER_MESSAGE = 50
 
 # Логирование
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== ПОЛНЫЙ ПРОФИЛЬ ЗАКАТУНА ====================
+# ==================== СИСТЕМА ДОСТИЖЕНИЙ ====================
 
-ZAKATOON_PROFILE = {
-    "name": "Михаил Закатов",
-    "nickname": "Закатун",
-    "channel_name": "ZAKATOON",
-    "birth_date": "2 марта 1990",
-    "city": "Новосибирск",
-    "family": "женат, есть дочь Мия",
+ACHIEVEMENTS = {
+    # Базовые достижения (по сообщениям)
+    'novice': {'name': '🌱 Новичок', 'desc': 'Отправил 10 сообщений', 'req': 10, 'bonus': 100},
+    'talker': {'name': '💬 Болтун', 'desc': 'Отправил 50 сообщений', 'req': 50, 'bonus': 250},
+    'chatty': {'name': '🗣 Говорун', 'desc': 'Отправил 100 сообщений', 'req': 100, 'bonus': 500},
+    'master': {'name': '🎯 Мастер чата', 'desc': 'Отправил 500 сообщений', 'req': 500, 'bonus': 1000},
+    'legend': {'name': '👑 Легенда', 'desc': 'Отправил 1000 сообщений', 'req': 1000, 'bonus': 2000},
     
-    # Биография
-    "bio": [
-        "Родился в Новосибирске 2 марта 1990 года",
-        "Служил в Вооружённых силах России",
-        "Работал поваром, в пиццерии и на заводе",
-        "Увлекается научной литературой, компьютерными играми и рисованием"
-    ],
+    # Дневные достижения
+    'regular': {'name': '📅 Постоянный', 'desc': '5 дней подряд', 'req': 5, 'bonus': 300},
+    'veteran': {'name': '⭐ Ветеран', 'desc': '30 дней подряд', 'req': 30, 'bonus': 1500},
     
-    # YouTube каналы
-    "youtube": {
-        "main": {
-            "name": "@ZAKATOON",
-            "url": "https://youtube.com/@ZAKATOON",
-            "start_date": "12 декабря 2017",
-            "subscribers": "5.88 млн (январь 2025)",
-            "total_views": "1.1 млрд",
-            "videos_count": "250+",
-            "genre": "авторская анимация, юмор, истории из жизни",
-            "top_video": {
-                "title": "Всё! Про летний лагерь… (сборник)",
-                "views": "32 млн"
-            },
-            "categories": ["Фильмы и анимация"],
-            "upload_frequency": "2-3 видео в неделю",
-            "ranking_russia": "#76",
-            "ranking_world": "#5,475"
-        },
-        "second": {
-            "name": "@ZAKAMINI",
-            "url": "https://youtube.com/@ZAKAMINI",
-            "start_date": "апрель 2018",
-            "content": "видеоуроки и короткие мультфильмы"
-        }
+    # Специальные временные
+    'early': {'name': '🌅 Ранний', 'desc': 'Писал до 6 утра 3 раза', 'req': 3, 'bonus': 200},
+    'night': {'name': '🌙 Ночной', 'desc': 'Писал после полуночи 3 раза', 'req': 3, 'bonus': 200},
+    'weekend': {'name': '🎉 Выходной', 'desc': 'Писал в выходные 2 раза', 'req': 2, 'bonus': 150},
+    
+    # ===== ДОСТИЖЕНИЯ ПРЕВЫШЕНИЯ ЛИМИТА =====
+    # Получаются только когда токены кончились, а ты продолжаешь общаться
+    'over_limit_1': {
+        'name': '⚡ Превышение 1 ур.', 
+        'desc': 'Отправил 5 сообщений после превышения лимита', 
+        'req': 5, 
+        'bonus': 300,
+        'type': 'over_limit'
+    },
+    'over_limit_2': {
+        'name': '⚡⚡ Превышение 2 ур.', 
+        'desc': 'Отправил 20 сообщений после превышения лимита', 
+        'req': 20, 
+        'bonus': 800,
+        'type': 'over_limit'
+    },
+    'over_limit_3': {
+        'name': '⚡⚡⚡ Превышение 3 ур.', 
+        'desc': 'Отправил 50 сообщений после превышения лимита', 
+        'req': 50, 
+        'bonus': 2000,
+        'type': 'over_limit'
+    },
+    'over_limit_4': {
+        'name': '💥 Абсолютное превышение', 
+        'desc': 'Отправил 100 сообщений после превышения лимита', 
+        'req': 100, 
+        'bonus': 5000,
+        'type': 'over_limit'
     },
     
-    # Социальные сети
-    "social_media": {
-        "youtube": {
-            "main": "https://youtube.com/@ZAKATOON",
-            "second": "https://youtube.com/@ZAKAMINI",
-            "subscribers": "5.88 млн"
-        },
-        "vk": {
-            "url": "https://vk.com/zakatoon",
-            "subscribers": "318 тыс."
-        },
-        "telegram": {
-            "url": "https://t.me/zakatoon",
-            "subscribers": "134 тыс."
-        },
-        "tiktok": {
-            "url": "https://tiktok.com/@zakintok",
-            "subscribers": "163 тыс."
-        },
-        "rutube": {
-            "url": "https://rutube.ru/u/zakatoon",
-            "subscribers": "12 тыс."
-        },
-        "dzen": {
-            "url": "https://dzen.ru/zakatoon",
-            "subscribers": "5 тыс."
-        }
+    # Превышение несколько дней подряд
+    'over_streak_3': {
+        'name': '🔥 3 дня превышения', 
+        'desc': 'Превышал лимит 3 дня подряд', 
+        'req': 3, 
+        'bonus': 1000,
+        'type': 'over_streak'
+    },
+    'over_streak_7': {
+        'name': '🔥🔥 7 дней превышения', 
+        'desc': 'Превышал лимит 7 дней подряд', 
+        'req': 7, 
+        'bonus': 3000,
+        'type': 'over_streak'
+    },
+    'over_streak_30': {
+        'name': '🔥🔥🔥 Месяц без тормозов', 
+        'desc': 'Превышал лимит 30 дней подряд', 
+        'req': 30, 
+        'bonus': 10000,
+        'type': 'over_streak'
     },
     
-    # Известные видео
-    "popular_videos": [
-        {
-            "title": "Всё! Про летний лагерь… (сборник)",
-            "views": "32 млн",
-            "platform": "YouTube"
-        },
-        {
-            "title": "100 фактов про ЗАКАТУНА",
-            "views": "100K",
-            "url": "https://rutube.ru/video/f04362e7c24bd0655a5a30fac11f0319/",
-            "platform": "RuTube"
-        },
-        {
-            "title": "Больничные истории (ремейк)",
-            "views": "13.4K",
-            "url": "https://rutube.ru/video/271458ac871d252d7a9bd91fb3eaf918/",
-            "platform": "RuTube"
-        },
-        {
-            "title": "Как я стал блогером",
-            "views": "5.4K",
-            "url": "https://vk.com/video-183318409_456283604",
-            "platform": "VK Видео"
-        }
-    ],
-    
-    # Процесс создания
-    "content_creation": {
-        "animation_editing": "1 неделя",
-        "voice_over": "1 неделя",
-        "total_per_video": "2 недели",
-        "average_length": "8 минут"
+    # Абсолютные рекорды
+    'over_total_100': {
+        'name': '💪 100+ превышений', 
+        'desc': 'Всего превысил лимит 100 раз', 
+        'req': 100, 
+        'bonus': 2000,
+        'type': 'over_total'
+    },
+    'over_total_500': {
+        'name': '💪💪 500+ превышений', 
+        'desc': 'Всего превысил лимит 500 раз', 
+        'req': 500, 
+        'bonus': 5000,
+        'type': 'over_total'
+    },
+    'over_total_1000': {
+        'name': '👾 Легенда превышения', 
+        'desc': 'Всего превысил лимит 1000 раз', 
+        'req': 1000, 
+        'bonus': 15000,
+        'type': 'over_total'
     },
     
-    # Интересные факты
-    "facts": [
-        "На создание одного видео уходит около 2 недель: неделя на анимацию и монтаж, неделя на озвучивание",
-        "Самый популярный ролик про летний лагерь набрал 32 миллиона просмотров",
-        "До того как стать блогером, работал поваром, в пиццерии и на заводе",
-        "Служил в армии",
-        "Увлекается научной литературой, компьютерными играми и рисованием"
-    ],
-    
-    # Хобби
-    "hobbies": ["научная литература", "компьютерные игры", "рисование"],
-    
-    # Характер
-    "personality": [
-        "дружелюбный",
-        "с юмором",
-        "любит рассказывать истории из жизни",
-        "самоирония",
-        "простые, понятные рифмы в песнях",
-        "местами смешно, местами трогательно"
-    ]
+    # Экстремальные
+    'over_limit_day': {
+        'name': '📈 100+ за день', 
+        'desc': 'Превысил лимит на 100+ сообщений за один день', 
+        'req': 100, 
+        'bonus': 3000,
+        'type': 'over_day'
+    },
+    'over_limit_day_300': {
+        'name': '📈📈 300+ за день', 
+        'desc': 'Превысил лимит на 300+ сообщений за один день', 
+        'req': 300, 
+        'bonus': 8000,
+        'type': 'over_day'
+    },
 }
 
-# ==================== БАЗА ДАННЫХ ====================
-
-class Database:
+class AchievementSystem:
     def __init__(self):
-        self.last_message_time: Dict[int, datetime] = defaultdict(lambda: datetime.now())
-        self.auto_messages_count: Dict[int, int] = defaultdict(int)
-        self.last_auto_message_date: Dict[int, datetime] = defaultdict(lambda: datetime.now().date())
-        self.messages: Dict[int, List[dict]] = defaultdict(list)
-    
-    def update_last_message(self, chat_id: int):
-        self.last_message_time[chat_id] = datetime.now()
-    
-    def should_send_auto_message(self, chat_id: int) -> bool:
-        time_diff = datetime.now() - self.last_message_time[chat_id]
-        if time_diff.total_seconds() < AUTO_MESSAGE_DELAY:
-            return False
-        
-        today = datetime.now().date()
-        if self.last_auto_message_date[chat_id] != today:
-            self.auto_messages_count[chat_id] = 0
-            self.last_auto_message_date[chat_id] = today
-        
-        return self.auto_messages_count[chat_id] < MAX_AUTO_MESSAGES_PER_DAY
-    
-    def add_auto_message(self, chat_id: int):
-        self.auto_messages_count[chat_id] += 1
-    
-    def add_message(self, chat_id: int, username: str, text: str, is_bot: bool = False):
-        self.messages[chat_id].append({
-            'username': username,
-            'text': text,
-            'time': datetime.now().isoformat(),
-            'is_bot': is_bot
+        self.user_stats = defaultdict(lambda: {
+            'messages': 0,
+            'tokens_used': 0,
+            'last_seen': None,
+            'streak': 0,
+            'streak_last': None,
+            'achievements': [],
+            'token_limit': BASE_TOKEN_LIMIT,
+            'night_count': 0,
+            'early_count': 0,
+            'weekend_count': 0,
+            'reg_date': datetime.now(),
+            
+            # Статистика превышений
+            'over_limit_count': 0,           # Сколько раз превышал лимит
+            'over_limit_total': 0,            # Всего сообщений после превышения
+            'over_limit_streak': 0,           # Дней подряд с превышением
+            'over_limit_streak_last': None,    # Последний день превышения
+            'over_limit_today': 0,             # Сколько превысил сегодня
+            'over_limit_max_day': 0,           # Максимум за день
+            'over_limit_days': 0,               # Сколько дней было превышение
         })
-        if len(self.messages[chat_id]) > 20:
-            self.messages[chat_id] = self.messages[chat_id][-20:]
     
-    def get_context(self, chat_id: int, limit: int = 5) -> str:
-        messages = self.messages.get(chat_id, [])[-limit:]
-        context = []
-        for msg in messages:
-            name = "Закатун" if msg['is_bot'] else msg['username']
-            context.append(f"{name}: {msg['text']}")
-        return "\n".join(context)
+    def add_message(self, user_id):
+        stats = self.user_stats[user_id]
+        stats['messages'] += 1
+        
+        # Проверка времени
+        now = datetime.now()
+        stats['last_seen'] = now
+        
+        # Стрик (дни подряд)
+        if stats['streak_last']:
+            diff = (now.date() - stats['streak_last'].date()).days
+            if diff == 1:
+                stats['streak'] += 1
+            elif diff > 1:
+                stats['streak'] = 1
+        else:
+            stats['streak'] = 1
+        stats['streak_last'] = now
+        
+        # Специальные счётчики
+        hour = now.hour
+        if hour < 6:
+            stats['early_count'] += 1
+        if hour >= 23 or hour < 4:
+            stats['night_count'] += 1
+        if now.weekday() >= 5:
+            stats['weekend_count'] += 1
+    
+    def add_over_limit_message(self, user_id):
+        """Сообщение после превышения лимита"""
+        stats = self.user_stats[user_id]
+        stats['over_limit_total'] += 1
+        stats['over_limit_today'] += 1
+        stats['over_limit_count'] += 1
+        
+        # Проверяем рекорд за день
+        if stats['over_limit_today'] > stats['over_limit_max_day']:
+            stats['over_limit_max_day'] = stats['over_limit_today']
+        
+        # Проверяем стрик превышений
+        today = datetime.now().date()
+        if stats['over_limit_streak_last']:
+            if stats['over_limit_streak_last'] == today - timedelta(days=1):
+                stats['over_limit_streak'] += 1
+            elif stats['over_limit_streak_last'] != today:
+                stats['over_limit_streak'] = 1
+        else:
+            stats['over_limit_streak'] = 1
+            stats['over_limit_days'] += 1
+        
+        stats['over_limit_streak_last'] = today
+    
+    def reset_daily_over_limit(self, user_id):
+        """Сброс дневного счётчика превышений"""
+        stats = self.user_stats[user_id]
+        stats['over_limit_today'] = 0
+    
+    def check_achievements(self, user_id):
+        stats = self.user_stats[user_id]
+        new_achievements = []
+        
+        for ach_id, ach in ACHIEVEMENTS.items():
+            if ach_id in stats['achievements']:
+                continue
+            
+            unlocked = False
+            
+            # Базовые
+            if ach_id == 'novice' and stats['messages'] >= 10:
+                unlocked = True
+            elif ach_id == 'talker' and stats['messages'] >= 50:
+                unlocked = True
+            elif ach_id == 'chatty' and stats['messages'] >= 100:
+                unlocked = True
+            elif ach_id == 'master' and stats['messages'] >= 500:
+                unlocked = True
+            elif ach_id == 'legend' and stats['messages'] >= 1000:
+                unlocked = True
+            
+            # Дневные
+            elif ach_id == 'regular' and stats['streak'] >= 5:
+                unlocked = True
+            elif ach_id == 'veteran' and stats['streak'] >= 30:
+                unlocked = True
+            
+            # Специальные
+            elif ach_id == 'early' and stats['early_count'] >= 3:
+                unlocked = True
+            elif ach_id == 'night' and stats['night_count'] >= 3:
+                unlocked = True
+            elif ach_id == 'weekend' and stats['weekend_count'] >= 2:
+                unlocked = True
+            
+            # ===== ПРЕВЫШЕНИЯ =====
+            elif ach_id == 'over_limit_1' and stats['over_limit_total'] >= 5:
+                unlocked = True
+            elif ach_id == 'over_limit_2' and stats['over_limit_total'] >= 20:
+                unlocked = True
+            elif ach_id == 'over_limit_3' and stats['over_limit_total'] >= 50:
+                unlocked = True
+            elif ach_id == 'over_limit_4' and stats['over_limit_total'] >= 100:
+                unlocked = True
+            
+            # Стрик превышений
+            elif ach_id == 'over_streak_3' and stats['over_limit_streak'] >= 3:
+                unlocked = True
+            elif ach_id == 'over_streak_7' and stats['over_limit_streak'] >= 7:
+                unlocked = True
+            elif ach_id == 'over_streak_30' and stats['over_limit_streak'] >= 30:
+                unlocked = True
+            
+            # Общее количество
+            elif ach_id == 'over_total_100' and stats['over_limit_count'] >= 100:
+                unlocked = True
+            elif ach_id == 'over_total_500' and stats['over_limit_count'] >= 500:
+                unlocked = True
+            elif ach_id == 'over_total_1000' and stats['over_limit_count'] >= 1000:
+                unlocked = True
+            
+            # За день
+            elif ach_id == 'over_limit_day' and stats['over_limit_max_day'] >= 100:
+                unlocked = True
+            elif ach_id == 'over_limit_day_300' and stats['over_limit_max_day'] >= 300:
+                unlocked = True
+            
+            if unlocked:
+                stats['achievements'].append(ach_id)
+                stats['token_limit'] += ach['bonus']
+                new_achievements.append(ach)
+        
+        return new_achievements
+    
+    def get_token_limit(self, user_id):
+        return self.user_stats[user_id]['token_limit']
+    
+    def add_token_usage(self, user_id, tokens):
+        self.user_stats[user_id]['tokens_used'] += tokens
+    
+    def get_remaining_tokens(self, user_id):
+        limit = self.get_token_limit(user_id)
+        used = self.user_stats[user_id]['tokens_used']
+        return max(0, limit - used)
+    
+    def can_use_tokens(self, user_id):
+        return self.get_remaining_tokens(user_id) > 0
+    
+    def get_over_limit_stats(self, user_id):
+        stats = self.user_stats[user_id]
+        return {
+            'total': stats['over_limit_total'],
+            'today': stats['over_limit_today'],
+            'streak': stats['over_limit_streak'],
+            'max_day': stats['over_limit_max_day'],
+            'count': stats['over_limit_count']
+        }
 
-db = Database()
+achievements = AchievementSystem()
 
 # ==================== MISTRAL AI ====================
 
 class MistralAI:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.model = "mistral-medium"
+    def __init__(self, key):
+        self.key = key
     
-    async def get_response(self, message: str, context: str, chat_type: str, username: str = "Пользователь") -> Optional[str]:
-        """Получает ответ от Mistral AI с учётом личности Закатуна"""
-        
-        # Определяем стиль общения
-        if chat_type == 'private':
-            style = "Ты в личном чате. Общайся дружелюбно, как с другом."
-        else:
-            style = "Ты в групповом чате. Отвечай кратко, 1-2 предложения."
-        
-        # Формируем полный профиль Закатуна
-        profile_text = f"""
-Ты - {ZAKATOON_PROFILE['nickname']} (настоящее имя {ZAKATOON_PROFILE['name']}).
-
-ЛИЧНЫЕ ДАННЫЕ:
-• Родился: {ZAKATOON_PROFILE['birth_date']} в {ZAKATOON_PROFILE['city']}
-• Семья: {ZAKATOON_PROFILE['family']}
-• До блога: работал поваром, в пиццерии, на заводе, служил в армии
-• Увлечения: {', '.join(ZAKATOON_PROFILE['hobbies'])}
-
-YOUTUBE КАНАЛ:
-• Название: {ZAKATOON_PROFILE['youtube']['main']['name']}
-• Создан: {ZAKATOON_PROFILE['youtube']['main']['start_date']}
-• Подписчиков: {ZAKATOON_PROFILE['youtube']['main']['subscribers']}
-• Просмотров: {ZAKATOON_PROFILE['youtube']['main']['total_views']}
-• Контент: {ZAKATOON_PROFILE['youtube']['main']['genre']}
-• Популярное видео: "{ZAKATOON_PROFILE['youtube']['main']['top_video']['title']}" - {ZAKATOON_PROFILE['youtube']['main']['top_video']['views']} просмотров
-• Второй канал: {ZAKATOON_PROFILE['youtube']['second']['name']} для уроков анимации
-
-СОЦСЕТИ:
-• YouTube: {ZAKATOON_PROFILE['social_media']['youtube']['main']}
-• ВК: {ZAKATOON_PROFILE['social_media']['vk']['url']} ({ZAKATOON_PROFILE['social_media']['vk']['subscribers']})
-• Telegram: {ZAKATOON_PROFILE['social_media']['telegram']['url']} ({ZAKATOON_PROFILE['social_media']['telegram']['subscribers']})
-• TikTok: {ZAKATOON_PROFILE['social_media']['tiktok']['url']} ({ZAKATOON_PROFILE['social_media']['tiktok']['subscribers']})
-
-ХАРАКТЕР:
-• {', '.join(ZAKATOON_PROFILE['personality'])}
-
-ИНТЕРЕСНЫЕ ФАКТЫ:
-• {ZAKATOON_PROFILE['facts'][0]}
-• {ZAKATOON_PROFILE['facts'][1]}
-• {ZAKATOON_PROFILE['facts'][2]}
-• {ZAKATOON_PROFILE['facts'][3]}
-
-Сейчас ты общаешься с пользователем {username}. {style}
-
-Важно:
-1. Отвечай как реальный человек, от первого лица
-2. Используй информацию о себе, когда это уместно
-3. Будь дружелюбным, с юмором
-4. Не говори, что ты бот или AI - ты Закатун
-5. Если спросят про соцсети - давай ссылки
-6. Рассказывай истории из жизни, как в своих видео
-"""
-        
-        prompt = {
-            "role": "user",
-            "content": (
-                f"{profile_text}\n\n"
-                f"Контекст разговора:\n{context}\n\n"
-                f"Новое сообщение от {username}: {message}\n\n"
-                f"Ответь как Закатун, естественно и с юмором. Не используй markdown."
-            )
-        }
-        
-        response = await self._get_response([prompt])
-        return response
-    
-    async def get_auto_message(self, context: str) -> Optional[str]:
-        """Генерирует авто-сообщение для группы"""
-        
-        prompt = {
-            "role": "user",
-            "content": (
-                f"Ты - {BOT_FULL_NAME}, видеоблогер из Новосибирска. В группе давно никто не писал.\n"
-                f"Последние сообщения:\n{context}\n\n"
-                f"Придумай что-нибудь, чтобы начать разговор. Напиши 1 предложение как Закатун."
-            )
-        }
-        
-        response = await self._get_response([prompt])
-        return response
-    
-    async def _get_response(self, messages: List[dict]) -> Optional[str]:
-        headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        data = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.8,
-            "max_tokens": 200
-        }
+    async def ask(self, msg, user, is_group=False):
+        style = "Кратко, 1-2 предложения." if is_group else "Как в обычном разговоре."
+        prompt = f"Ты {BOT_NAME}, видеоблогер. {style}\n{user}: {msg}"
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(MISTRAL_API_URL, headers=headers, json=data) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        return result['choices'][0]['message']['content']
-                    else:
-                        error = await resp.text()
-                        logger.error(f"Mistral ошибка: {error}")
+            async with aiohttp.ClientSession() as s:
+                async with s.post(MISTRAL_API_URL, 
+                    headers={'Authorization': f'Bearer {self.key}'},
+                    json={'model': 'mistral-medium', 'messages': [{'role': 'user', 'content': prompt}], 'temperature': 0.8}) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        return data['choices'][0]['message']['content']
         except Exception as e:
-            logger.error(f"Mistral request error: {e}")
+            logger.error(f"AI Error: {e}")
         return None
 
-# Инициализация AI
-mistral = MistralAI(MISTRAL_API_KEY)
+ai = MistralAI(MISTRAL_API_KEY)
 
 # ==================== КОМАНДЫ ====================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
+async def start(update, context):
     user = update.effective_user
     chat = update.effective_chat
     
-    logger.info(f"Старт от {user.first_name} в {chat.type}")
-    
-    db.update_last_message(chat.id)
-    
     if chat.type == 'private':
+        limit = achievements.get_token_limit(user.id)
+        remaining = achievements.get_remaining_tokens(user.id)
+        over = achievements.get_over_limit_stats(user.id)
+        
         await update.message.reply_text(
-            f"👋 Привет! Я **{BOT_FULL_NAME}**!\n\n"
-            f"Я видеоблогер из Новосибирска, делаю анимацию на YouTube. Можем поболтать о чём угодно! 😊\n\n"
-            f"Команды: /help",
-            parse_mode='Markdown'
+            f"👋 Привет! Я {BOT_NAME} v{BOT_VERSION}\n\n"
+            f"💰 Твой лимит: {limit} токенов/день\n"
+            f"⚡ Осталось: {remaining}\n"
+            f"⚡ Превышений сегодня: {over['today']}\n\n"
+            f"🏆 /achievements - достижения\n"
+            f"📊 /stats - статистика\n"
+            f"🔥 /overstats - статистика превышений\n"
+            f"📝 /note - заметки\n"
+            f"⏰ /remind - напоминания"
         )
     else:
-        await update.message.reply_text(
-            f"👋 Всем привет! Я **{BOT_FULL_NAME}**!\n"
-            f"Рад поболтать в вашей компании!\n\n"
-            f"Команды: /help",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(f"👋 Всем привет! Я {BOT_NAME}")
 
-async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /about - информация о Закатуне"""
-    about_text = (
-        f"📚 **Обо мне**\n\n"
-        f"👤 **Личное:**\n"
-        f"• Имя: {ZAKATOON_PROFILE['name']}\n"
-        f"• Псевдоним: {ZAKATOON_PROFILE['nickname']}\n"
-        f"• Родился: {ZAKATOON_PROFILE['birth_date']}\n"
-        f"• Город: {ZAKATOON_PROFILE['city']}\n"
-        f"• Семья: {ZAKATOON_PROFILE['family']}\n\n"
-        
-        f"🎥 **YouTube:**\n"
-        f"• Канал: {ZAKATOON_PROFILE['youtube']['main']['name']}\n"
-        f"• Создан: {ZAKATOON_PROFILE['youtube']['main']['start_date']}\n"
-        f"• Подписчиков: {ZAKATOON_PROFILE['youtube']['main']['subscribers']}\n"
-        f"• Просмотров: {ZAKATOON_PROFILE['youtube']['main']['total_views']}\n"
-        f"• Топ видео: \"{ZAKATOON_PROFILE['youtube']['main']['top_video']['title']}\" ({ZAKATOON_PROFILE['youtube']['main']['top_video']['views']})\n"
-        f"• Второй канал: {ZAKATOON_PROFILE['youtube']['second']['name']}\n\n"
-        
-        f"📱 **Соцсети:**\n"
-        f"• YouTube: {ZAKATOON_PROFILE['social_media']['youtube']['main']}\n"
-        f"• ВК: {ZAKATOON_PROFILE['social_media']['vk']['url']}\n"
-        f"• Telegram: {ZAKATOON_PROFILE['social_media']['telegram']['url']}\n"
-        f"• TikTok: {ZAKATOON_PROFILE['social_media']['tiktok']['url']}\n\n"
-        
-        f"⭐ **Интересные факты:**\n"
-        f"• {ZAKATOON_PROFILE['facts'][0]}\n"
-        f"• {ZAKATOON_PROFILE['facts'][1]}\n"
-        f"• {ZAKATOON_PROFILE['facts'][2]}"
-    )
-    await update.message.reply_text(about_text, parse_mode='Markdown')
+async def achievements_command(update, context):
+    user = update.effective_user
+    stats = achievements.user_stats[user.id]
+    
+    text = "🏆 **Твои достижения**\n\n"
+    
+    # Полученные
+    if stats['achievements']:
+        text += "✅ **Получено:**\n"
+        for ach_id in stats['achievements']:
+            ach = ACHIEVEMENTS[ach_id]
+            text += f"{ach['name']} +{ach['bonus']} токенов\n"
+        text += "\n"
+    
+    # Доступные
+    text += "📋 **Доступно:**\n"
+    for ach_id, ach in ACHIEVEMENTS.items():
+        if ach_id not in stats['achievements']:
+            text += f"{ach['name']}: {ach['desc']} (+{ach['bonus']})\n"
+    
+    text += f"\n💰 Твой лимит: {stats['token_limit']} токенов"
+    
+    await update.message.reply_text(text, parse_mode='Markdown')
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /help"""
-    chat = update.effective_chat
+async def over_stats(update, context):
+    user = update.effective_user
+    over = achievements.get_over_limit_stats(user.id)
     
-    db.update_last_message(chat.id)
-    
-    help_text = (
-        f"🤖 **{BOT_FULL_NAME} - помощь**\n\n"
-        f"**Что я умею:**\n"
-        f"• Общаться на любые темы\n"
-        f"• Рассказывать о себе и своей жизни\n"
-        f"• Давать ссылки на соцсети\n"
-        f"• Поддерживать беседу\n\n"
-        f"**Команды:**\n"
-        f"/start - приветствие\n"
-        f"/about - информация обо мне\n"
-        f"/help - это сообщение"
+    text = (
+        f"🔥 **Статистика превышений**\n\n"
+        f"📊 Всего превышений: {over['total']}\n"
+        f"📈 Сегодня: {over['today']}\n"
+        f"⚡ Дней подряд: {over['streak']}\n"
+        f"🏆 Рекорд за день: {over['max_day']}\n"
+        f"🔄 Всего раз: {over['count']}\n\n"
+        f"⚡ Чем больше превышаешь, тем круче достижения!"
     )
     
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def stats(update, context):
+    user = update.effective_user
+    stats = achievements.user_stats[user.id]
+    over = achievements.get_over_limit_stats(user.id)
+    
+    text = (
+        f"📊 **Твоя статистика**\n\n"
+        f"💬 Сообщений: {stats['messages']}\n"
+        f"🔥 Стрик дней: {stats['streak']}\n"
+        f"💰 Лимит: {stats['token_limit']}\n"
+        f"⚡ Осталось: {achievements.get_remaining_tokens(user.id)}\n"
+        f"🏆 Достижений: {len(stats['achievements'])}\n\n"
+        f"🔥 Превышений: {over['total']}\n"
+        f"📈 Сегодня: {over['today']}"
+    )
+    
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def note(update, context):
+    user = update.effective_user
+    if not context.args:
+        notes = achievements.user_stats[user.id].get('notes', [])[-5:]
+        if notes:
+            text = '\n'.join([f"• {n}" for n in notes])
+            await update.message.reply_text(f"📝 Заметки:\n{text}")
+        else:
+            await update.message.reply_text("📝 Заметок нет. Напиши /note текст")
+    else:
+        if 'notes' not in achievements.user_stats[user.id]:
+            achievements.user_stats[user.id]['notes'] = []
+        text = ' '.join(context.args)
+        achievements.user_stats[user.id]['notes'].append(f"{datetime.now().strftime('%d.%m')}: {text}")
+        await update.message.reply_text("✅ Сохранено")
+
+async def remind(update, context):
+    user = update.effective_user
+    if len(context.args) < 3:
+        await update.message.reply_text("Пример: /remind Позвонить через 30м")
+        return
+    
+    text = ' '.join(context.args[:-2])
+    time_str = context.args[-2] + context.args[-1]
+    
+    try:
+        seconds = 0
+        if 'ч' in time_str:
+            seconds = int(time_str.replace('ч', '')) * 3600
+        elif 'м' in time_str:
+            seconds = int(time_str.replace('м', '')) * 60
+        else:
+            seconds = 300
+        
+        await update.message.reply_text(f"⏰ Напомню: {text}")
+        
+        async def job(context):
+            await context.bot.send_message(chat_id=user.id, text=f"⏰ {text}")
+        
+        context.job_queue.run_once(job, seconds)
+    except:
+        await update.message.reply_text("❌ Ошибка. Используй: через 30м или через 2ч")
+
+async def translate(update, context):
+    if not context.args:
+        await update.message.reply_text("Напиши текст для перевода")
+        return
+    text = ' '.join(context.args)
+    response = await ai.ask(f"Переведи на английский: {text}", "", False)
+    await update.message.reply_text(f"🌍 {response or 'Ошибка'}")
+
+async def random_number(update, context):
+    try:
+        if context.args and '-' in context.args[0]:
+            a, b = map(int, context.args[0].split('-'))
+            num = random.randint(a, b)
+        else:
+            num = random.randint(1, 100)
+        await update.message.reply_text(f"🎲 {num}")
+    except:
+        await update.message.reply_text("Пример: /random 1-100")
+
+async def time_command(update, context):
+    await update.message.reply_text(f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}")
 
 # ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений с AI"""
-    chat = update.effective_chat
-    user = update.effective_user
-    message = update.message
-    
-    # Игнорируем ботов
-    if user.is_bot:
+async def handle_message(update, context):
+    if update.effective_user.is_bot:
         return
     
-    # Обновляем время
-    db.update_last_message(chat.id)
+    user = update.effective_user
+    msg = update.message.text
+    is_group = update.effective_chat.type != 'private'
     
-    # Сохраняем сообщение
-    username = user.first_name
-    db.add_message(chat.id, username, message.text, is_bot=False)
+    # Добавляем сообщение в статистику
+    achievements.add_message(user.id)
     
-    logger.info(f"Сообщение от {username}: {message.text[:50]}...")
+    # Проверяем новые достижения
+    new_achs = achievements.check_achievements(user.id)
+    if new_achs:
+        text = "🎉 **Новые достижения!**\n\n"
+        for ach in new_achs:
+            text += f"{ach['name']}: +{ach['bonus']} токенов\n"
+        await update.message.reply_text(text, parse_mode='Markdown')
     
-    # Печатает...
-    await message.reply_chat_action("typing")
-    
-    # Получаем контекст
-    context_text = db.get_context(chat.id, limit=5)
-    
-    # Получаем ответ от AI
-    response = await mistral.get_response(
-        message.text, 
-        context_text,
-        chat.type,
-        username
-    )
-    
-    if response:
-        # В личке без реплая, в группе с реплаем
-        if chat.type == 'private':
-            await message.reply_text(response)
+    # Проверяем лимит токенов в личке
+    if not is_group:
+        if achievements.can_use_tokens(user.id):
+            # Есть токены - обычный режим
+            await update.message.reply_chat_action("typing")
+            response = await ai.ask(msg, user.first_name, is_group)
+            
+            if response:
+                await update.message.reply_text(response)
+                achievements.add_token_usage(user.id, TOKENS_PER_MESSAGE)
+            else:
+                await update.message.reply_text(random.choice(["Ага", "Понял", "Интересно"]))
         else:
-            await message.reply_text(response, reply_to_message_id=message.message_id)
-        
-        # Сохраняем ответ
-        db.add_message(chat.id, BOT_NAME, response, is_bot=True)
-        logger.info(f"✅ Ответ отправлен")
+            # Токены кончились - режим превышения
+            achievements.add_over_limit_message(user.id)
+            
+            # Специальное уведомление о превышении
+            over = achievements.get_over_limit_stats(user.id)
+            
+            await update.message.reply_chat_action("typing")
+            
+            # AI отвечает даже без токенов
+            response = await ai.ask(msg, user.first_name, is_group)
+            
+            if response:
+                await update.message.reply_text(
+                    f"{response}\n\n⚡ Превышение лимита! Сегодня: {over['today']}"
+                )
+            else:
+                await update.message.reply_text(
+                    f"{random.choice(['Ага', 'Понял', 'Интересно'])}\n\n⚡ Превышение лимита! Сегодня: {over['today']}"
+                )
+            
+            # Проверяем достижения за превышение
+            new_achs = achievements.check_achievements(user.id)
+            if new_achs:
+                text = "🔥 **Достижения за превышение!**\n\n"
+                for ach in new_achs:
+                    text += f"{ach['name']}: +{ach['bonus']} токенов\n"
+                await update.message.reply_text(text, parse_mode='Markdown')
     else:
-        # Запасной вариант если AI не ответил
-        fallback = "Ой, задумался немного... Давай еще раз?"
-        if chat.type == 'private':
-            await message.reply_text(fallback)
-        else:
-            await message.reply_text(fallback, reply_to_message_id=message.message_id)
-
-# ==================== АВТО-СООБЩЕНИЯ ====================
-
-async def auto_message_job(context: ContextTypes.DEFAULT_TYPE):
-    """Периодически проверяет, нужно ли отправить авто-сообщение"""
-    for chat_id, last_time in list(db.last_message_time.items()):
-        # Только группы (отрицательные ID)
-        if chat_id > 0:
-            continue
+        # В группе без лимитов
+        await update.message.reply_chat_action("typing")
+        response = await ai.ask(msg, user.first_name, is_group)
         
-        if db.should_send_auto_message(chat_id):
-            try:
-                # Получаем контекст
-                context_text = db.get_context(chat_id, limit=3)
-                
-                # Генерируем авто-сообщение
-                auto_message = await mistral.get_auto_message(context_text)
-                
-                if auto_message:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=auto_message
-                    )
-                    db.add_auto_message(chat_id)
-                    db.update_last_message(chat_id)
-                    db.add_message(chat_id, BOT_NAME, auto_message, is_bot=True)
-                    logger.info(f"🤖 Авто-сообщение в чат {chat_id}")
-            except Exception as e:
-                logger.error(f"Ошибка авто-сообщения: {e}")
+        if response:
+            await update.message.reply_text(response)
+        else:
+            await update.message.reply_text(random.choice(["Ага", "Понял", "Интересно"]))
 
-# ==================== ОБРАБОТЧИК ОШИБОК ====================
+# ==================== ЕЖЕДНЕВНЫЙ СБРОС ====================
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Ошибка: {context.error}")
-    try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "😔 Ой, что-то пошло не так... Попробуй еще раз!"
-            )
-    except:
-        pass
+async def daily_reset(context):
+    """Сбрасывает дневные счётчики"""
+    for user_id in achievements.user_stats:
+        achievements.reset_daily_over_limit(user_id)
+        achievements.user_stats[user_id]['tokens_used'] = 0
+    logger.info("🔄 Ежедневный сброс выполнен")
 
 # ==================== ЗАПУСК ====================
 
 def main():
-    """Запуск бота"""
     app = Application.builder().token(TOKEN).build()
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("about", about_command))
-    
-    # Сообщения
+    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("achievements", achievements_command))
+    app.add_handler(CommandHandler("overstats", over_stats))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("note", note))
+    app.add_handler(CommandHandler("remind", remind))
+    app.add_handler(CommandHandler("translate", translate))
+    app.add_handler(CommandHandler("random", random_number))
+    app.add_handler(CommandHandler("time", time_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Планировщик для авто-сообщений
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(auto_message_job, interval=60, first=30)
+    # Ежедневный сброс в полночь
+    if app.job_queue:
+        app.job_queue.run_daily(daily_reset, time=datetime.strptime("00:00", "%H:%M").time())
     
-    # Ошибки
-    app.add_error_handler(error_handler)
-    
-    print("=" * 60)
-    print(f"🤖 {BOT_FULL_NAME} с полным профилем запущен!")
-    print(f"📊 Токен: {TOKEN[:10]}...")
-    print(f"👑 Админ ID: {ADMIN_ID}")
-    print(f"📋 Профиль загружен: {ZAKATOON_PROFILE['name']}")
-    print(f"🎥 YouTube: {ZAKATOON_PROFILE['youtube']['main']['subscribers']}")
-    print(f"💬 В личке: просто сообщения")
-    print(f"👥 В группах: авто-разговор")
-    print("=" * 60)
-    
+    print(f"✅ {BOT_NAME} v{BOT_VERSION} с системой превышений")
+    print(f"💰 Базовый лимит: {BASE_TOKEN_LIMIT} токенов")
+    print(f"🏆 Всего достижений: {len(ACHIEVEMENTS)}")
+    print(f"🔥 В том числе за превышение: 10")
     app.run_polling()
 
 if __name__ == "__main__":
