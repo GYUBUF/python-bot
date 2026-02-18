@@ -13,8 +13,8 @@ TOKEN = "8398666469:AAFJuFpeUieZOnLVxStaviHr1X--O3yAAu8"
 MISTRAL_KEY = "HCxrOgMwskodETQDGvITs4f65Qzwemiz"
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 
-BASE_LIMIT = 1000
-TOKENS_PER_MSG = 50
+BASE_LIMIT = 10000  # 10 000 токенов в день!
+TOKENS_PER_MSG = 50  # 1 сообщение = 50 токенов (200 сообщений в день!)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,12 +33,13 @@ users = defaultdict(UserData)
 
 # ==================== ДОСТИЖЕНИЯ ====================
 ACHIEVEMENTS = {
-    'over_5': ('⚡ Новичок', 5, 200),
-    'over_20': ('⚡⚡ Любитель', 20, 500),
-    'over_50': ('⚡⚡⚡ Профи', 50, 1000),
-    'over_100': ('💥 Мастер', 100, 2000),
-    'streak_3': ('🔥 3 дня', 3, 500),
-    'streak_7': ('🔥🔥 7 дней', 7, 1500),
+    'over_5': ('⚡ Новичок', 5, 500),
+    'over_20': ('⚡⚡ Любитель', 20, 1000),
+    'over_50': ('⚡⚡⚡ Профи', 50, 2000),
+    'over_100': ('💥 Мастер', 100, 4000),
+    'streak_3': ('🔥 3 дня', 3, 1000),
+    'streak_7': ('🔥🔥 7 дней', 7, 3000),
+    'streak_30': ('👑 Легенда', 30, 10000),
 }
 
 # ==================== MISTRAL AI ====================
@@ -64,14 +65,24 @@ async def ask_mistral(msg):
 async def start(update, context):
     uid = update.effective_user.id
     user = users[uid]
-    await update.message.reply_text(f"Привет! Лимит {user.limit}, превышений {user.over_total}")
+    remaining = user.limit - user.tokens
+    await update.message.reply_text(
+        f"👋 Привет!\n"
+        f"💰 Лимит: {user.limit} токенов\n"
+        f"⚡ Осталось: {remaining}\n"
+        f"🔥 Превышений: {user.over_total}\n"
+        f"🏆 /ach - достижения"
+    )
 
 async def achievements(update, context):
     uid = update.effective_user.id
     user = users[uid]
-    text = "Достижения:\n"
+    text = "🏆 Достижения:\n"
     for a in user.achs:
         text += f"✅ {a}\n"
+    if not user.achs:
+        text += "Пока нет\n"
+    text += f"\n💰 Лимит: {user.limit}"
     await update.message.reply_text(text)
 
 # ==================== ОБРАБОТЧИК ====================
@@ -107,6 +118,8 @@ async def handle_message(update, context):
     # Тратим токены
     if not is_group and user.tokens < user.limit:
         user.tokens += TOKENS_PER_MSG
+        if user.tokens >= user.limit:
+            await update.message.reply_text("⚠️ Лимит на сегодня исчерпан! Дальше будут копиться превышения 🔥")
     
     # Проверка достижений
     new = []
@@ -132,7 +145,13 @@ def main():
     app.add_handler(CommandHandler("ach", achievements))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Закатун запущен")
+    print("=" * 40)
+    print("🤖 Закатун запущен!")
+    print(f"💰 Лимит: {BASE_LIMIT} токенов/день")
+    print(f"💬 ~{BASE_LIMIT//TOKENS_PER_MSG} сообщений в день")
+    print("🏆 Достижения: 7 штук")
+    print("=" * 40)
+    
     app.run_polling()
 
 if __name__ == "__main__":
