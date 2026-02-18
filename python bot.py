@@ -2,157 +2,145 @@ import logging
 import asyncio
 import random
 from datetime import datetime, timedelta
-from typing import Dict
 from collections import defaultdict
 
 import aiohttp
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
-# Конфигурация
+# ==================== НАСТРОЙКИ ====================
 TOKEN = "8398666469:AAFJuFpeUieZOnLVxStaviHr1X--O3yAAu8"
-ADMIN_ID = 8386169734
 BOT_NAME = "Закатун"
-BOT_VERSION = "5.3"
-MISTRAL_API_KEY = "HCxrOgMwskodETQDGvITs4f65Qzwemiz"
-MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+BOT_VERSION = "1.0"
+MISTRAL_KEY = "HCxrOgMwskodETQDGvITs4f65Qzwemiz"
+MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 
-BASE_TOKEN_LIMIT = 1000
+BASE_LIMIT = 1000
 TOKENS_PER_MSG = 50
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== ДОСТИЖЕНИЯ ====================
-
-ACHIEVEMENTS = {
-    'over_5': {'name': '⚡ Новичок', 'req': 5, 'bonus': 200},
-    'over_20': {'name': '⚡⚡ Любитель', 'req': 20, 'bonus': 500},
-    'over_50': {'name': '⚡⚡⚡ Профи', 'req': 50, 'bonus': 1000},
-    'over_100': {'name': '💥 Мастер', 'req': 100, 'bonus': 2000},
-    'over_300': {'name': '🔥 Легенда', 'req': 300, 'bonus': 5000},
-    'streak_3': {'name': '🔥 3 дня', 'req': 3, 'bonus': 800},
-    'streak_7': {'name': '🔥🔥 7 дней', 'req': 7, 'bonus': 2000},
-    'streak_30': {'name': '👑 Месяц', 'req': 30, 'bonus': 5000},
-}
-
+# ==================== ДАННЫЕ ====================
 class UserData:
     def __init__(self):
-        self.messages = 0
-        self.tokens_used = 0
-        self.limit = BASE_TOKEN_LIMIT
-        self.over_today = 0
         self.over_total = 0
         self.over_streak = 0
-        self.streak_day = None
-        self.achievements = []
+        self.limit = BASE_LIMIT
+        self.tokens = 0
+        self.achs = []
         self.last_date = None
 
-class DB:
-    def __init__(self):
-        self.users = defaultdict(UserData)
-    
-    def get(self, uid): return self.users[uid]
-    
-    def add_msg(self, uid):
-        user = self.users[uid]
-        user.messages += 1
-        
-        today = datetime.now().date()
-        if user.last_date != today:
-            user.over_today = 0
-            user.tokens_used = 0
-            user.last_date = today
-            
-            if user.streak_day and user.streak_day == today - timedelta(days=1):
-                user.over_streak += 1
-            else:
-                user.over_streak = 1
-            user.streak_day = today
+users = defaultdict(UserData)
 
-db = DB()
+# ==================== ДОСТИЖЕНИЯ ====================
+ACHIEVEMENTS = {
+    'over_5': ('⚡ Новичок', 5, 200),
+    'over_20': ('⚡⚡ Любитель', 20, 500),
+    'over_50': ('⚡⚡⚡ Профи', 50, 1000),
+    'over_100': ('💥 Мастер', 100, 2000),
+    'streak_3': ('🔥 3 дня', 3, 500),
+    'streak_7': ('🔥🔥 7 дней', 7, 1500),
+}
 
-class MistralAI:
-    def __init__(self, key): self.key = key
-    
-    async def ask(self, msg):
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(MISTRAL_API_URL,
-                    headers={'Authorization': f'Bearer {self.key}'},
-                    json={'model': 'mistral-medium', 'messages': [{'role': 'user', 'content': f"Ты {BOT_NAME}. Ответь: {msg}"}]}) as r:
-                    return (await r.json())['choices'][0]['message']['content'] if r.status == 200 else None
-        except: return None
+# ==================== MISTRAL AI ====================
+async def ask_mistral(msg):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(MISTRAL_URL,
+                headers={'Authorization': f'Bearer {MISTRAL_KEY}'},
+                json={
+                    'model': 'mistral-medium',
+                    'messages': [{'role': 'user', 'content': msg}],
+                    'temperature': 0.8
+                }) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data['choices'][0]['message']['content']
+    except Exception as e:
+        logger.error(f"AI Error: {e}")
+    return random.choice(["Ага", "Понял", "Ок", "Интересно", "Ясно"])
 
-ai = MistralAI(MISTRAL_API_KEY)
-
+# ==================== КОМАНДЫ ====================
 async def start(update, context):
-    user = db.get(update.effective_user.id)
+    uid = update.effective_user.id
+    user = users[uid]
     await update.message.reply_text(
-        f"👋 Я {BOT_NAME} v{BOT_VERSION}\n"
+        f"👋 {BOT_NAME}\n"
         f"💰 Лимит: {user.limit}\n"
-        f"⚡ Осталось: {user.limit - user.tokens_used}\n"
         f"🔥 Превышений: {user.over_total}\n"
         f"/ach - достижения"
     )
 
 async def achievements(update, context):
-    user = db.get(update.effective_user.id)
+    uid = update.effective_user.id
+    user = users[uid]
     text = "🏆 Достижения:\n"
-    for a in user.achievements:
+    for a in user.achs:
         text += f"✅ {a}\n"
     text += f"\n💰 Лимит: {user.limit}"
     await update.message.reply_text(text)
 
-async def handle_msg(update, context):
-    if update.effective_user.is_bot: return
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+async def handle_message(update, context):
+    if update.effective_user.is_bot:
+        return
     
     uid = update.effective_user.id
     msg = update.message.text
     is_group = update.effective_chat.type != 'private'
     
-    db.add_msg(uid)
-    user = db.get(uid)
+    user = users[uid]
     
+    # Проверка дня
+    today = datetime.now().date()
+    if user.last_date != today:
+        user.tokens = 0
+        if user.last_date and user.last_date == today - timedelta(days=1):
+            user.over_streak += 1
+        else:
+            user.over_streak = 1
+        user.last_date = today
+    
+    # Лимиты в личке
     if not is_group:
-        can_respond = user.tokens_used < user.limit
-        
-        if not can_respond:
-            user.over_today += 1
+        if user.tokens >= user.limit:
             user.over_total += 1
-            
-            # Проверка достижений
-            new = []
-            for ach, data in ACHIEVEMENTS.items():
-                if ach in user.achievements: continue
-                if ach.startswith('over_') and user.over_total >= int(ach.split('_')[1]):
-                    user.limit += data['bonus']
-                    user.achievements.append(ach)
-                    new.append(f"{data['name']} +{data['bonus']}")
-                elif ach.startswith('streak_') and user.over_streak >= int(ach.split('_')[1]):
-                    user.limit += data['bonus']
-                    user.achievements.append(ach)
-                    new.append(f"{data['name']} +{data['bonus']}")
-            
-            if new:
-                await update.message.reply_text("🔥 Новое: " + ', '.join(new))
     
+    # Ответ
     await update.message.reply_chat_action("typing")
-    resp = await ai.ask(msg)
+    response = await ask_mistral(msg)
+    await update.message.reply_text(response)
     
-    if resp:
-        await update.message.reply_text(resp)
-        if not is_group and can_respond:
-            user.tokens_used += TOKENS_PER_MSG
-    else:
-        await update.message.reply_text(random.choice(["Ага", "Понял", "Ок", "Интересно", "Ясно"]))
+    # Тратим токены
+    if not is_group and user.tokens < user.limit:
+        user.tokens += TOKENS_PER_MSG
+    
+    # Проверка достижений
+    new_achs = []
+    for key, (name, req, bonus) in ACHIEVEMENTS.items():
+        if key in user.achs:
+            continue
+        if key.startswith('over_') and user.over_total >= req:
+            user.limit += bonus
+            user.achs.append(key)
+            new_achs.append(f"{name} +{bonus}")
+        elif key.startswith('streak_') and user.over_streak >= req:
+            user.limit += bonus
+            user.achs.append(key)
+            new_achs.append(f"{name} +{bonus}")
+    
+    if new_achs:
+        await update.message.reply_text("🔥 " + ", ".join(new_achs))
 
+# ==================== ЗАПУСК ====================
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ach", achievements))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    print(f"✅ {BOT_NAME} v{BOT_VERSION}")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print(f"✅ {BOT_NAME} запущен")
     app.run_polling()
 
 if __name__ == "__main__":
