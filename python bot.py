@@ -10,8 +10,6 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = "8398666469:AAFJuFpeUieZOnLVxStaviHr1X--O3yAAu8"
-BOT_NAME = "Закатун"
-BOT_VERSION = "1.0"
 MISTRAL_KEY = "HCxrOgMwskodETQDGvITs4f65Qzwemiz"
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 
@@ -52,36 +50,37 @@ async def ask_mistral(msg):
                 json={
                     'model': 'mistral-medium',
                     'messages': [{'role': 'user', 'content': msg}],
-                    'temperature': 0.8
+                    'temperature': 0.8,
+                    'max_tokens': 100
                 }) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data['choices'][0]['message']['content']
     except Exception as e:
         logger.error(f"AI Error: {e}")
-    return random.choice(["Ага", "Понял", "Ок", "Интересно", "Ясно"])
+    return random.choice(["Ага", "Понял", "Ок", "Интересно"])
 
 # ==================== КОМАНДЫ ====================
 async def start(update, context):
     uid = update.effective_user.id
     user = users[uid]
     await update.message.reply_text(
-        f"👋 {BOT_NAME}\n"
-        f"💰 Лимит: {user.limit}\n"
-        f"🔥 Превышений: {user.over_total}\n"
+        f"Привет! Лимит {user.limit}, превышений {user.over_total}\n"
         f"/ach - достижения"
     )
 
 async def achievements(update, context):
     uid = update.effective_user.id
     user = users[uid]
-    text = "🏆 Достижения:\n"
+    text = "Достижения:\n"
     for a in user.achs:
         text += f"✅ {a}\n"
-    text += f"\n💰 Лимит: {user.limit}"
+    if not user.achs:
+        text += "Пока нет\n"
+    text += f"\nЛимит: {user.limit}"
     await update.message.reply_text(text)
 
-# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+# ==================== ОБРАБОТЧИК ====================
 async def handle_message(update, context):
     if update.effective_user.is_bot:
         return
@@ -103,9 +102,8 @@ async def handle_message(update, context):
         user.last_date = today
     
     # Лимиты в личке
-    if not is_group:
-        if user.tokens >= user.limit:
-            user.over_total += 1
+    if not is_group and user.tokens >= user.limit:
+        user.over_total += 1
     
     # Ответ
     await update.message.reply_chat_action("typing")
@@ -117,21 +115,21 @@ async def handle_message(update, context):
         user.tokens += TOKENS_PER_MSG
     
     # Проверка достижений
-    new_achs = []
+    new = []
     for key, (name, req, bonus) in ACHIEVEMENTS.items():
         if key in user.achs:
             continue
         if key.startswith('over_') and user.over_total >= req:
             user.limit += bonus
             user.achs.append(key)
-            new_achs.append(f"{name} +{bonus}")
+            new.append(f"{name} +{bonus}")
         elif key.startswith('streak_') and user.over_streak >= req:
             user.limit += bonus
             user.achs.append(key)
-            new_achs.append(f"{name} +{bonus}")
+            new.append(f"{name} +{bonus}")
     
-    if new_achs:
-        await update.message.reply_text("🔥 " + ", ".join(new_achs))
+    if new:
+        await update.message.reply_text("🔥 " + ", ".join(new))
 
 # ==================== ЗАПУСК ====================
 def main():
@@ -140,7 +138,7 @@ def main():
     app.add_handler(CommandHandler("ach", achievements))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print(f"✅ {BOT_NAME} запущен")
+    print("✅ Закатун запущен")
     app.run_polling()
 
 if __name__ == "__main__":
