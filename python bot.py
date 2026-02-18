@@ -49,25 +49,22 @@ async def ask_mistral(msg):
                 headers={'Authorization': f'Bearer {MISTRAL_KEY}'},
                 json={
                     'model': 'mistral-medium',
-                    'messages': [{'role': 'user', 'content': msg}],
+                    'messages': [{'role': 'user', 'content': f"Отвечай коротко по-русски: {msg}"}],
                     'temperature': 0.8,
-                    'max_tokens': 100
+                    'max_tokens': 50
                 }) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data['choices'][0]['message']['content']
     except Exception as e:
         logger.error(f"AI Error: {e}")
-    return random.choice(["Ага", "Понял", "Ок", "Интересно"])
+    return random.choice(["Ага", "Понял", "Ок", "Интересно", "Ясно", "Бывает"])
 
 # ==================== КОМАНДЫ ====================
 async def start(update, context):
     uid = update.effective_user.id
     user = users[uid]
-    await update.message.reply_text(
-        f"Привет! Лимит {user.limit}, превышений {user.over_total}\n"
-        f"/ach - достижения"
-    )
+    await update.message.reply_text(f"Привет! Лимит {user.limit}, превышений {user.over_total}")
 
 async def achievements(update, context):
     uid = update.effective_user.id
@@ -75,9 +72,6 @@ async def achievements(update, context):
     text = "Достижения:\n"
     for a in user.achs:
         text += f"✅ {a}\n"
-    if not user.achs:
-        text += "Пока нет\n"
-    text += f"\nЛимит: {user.limit}"
     await update.message.reply_text(text)
 
 # ==================== ОБРАБОТЧИК ====================
